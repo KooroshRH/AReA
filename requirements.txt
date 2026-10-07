@@ -1,0 +1,8 @@
+torch>=2.4
+diffusers>=0.35
+transformers>=4.45
+accelerate>=0.30
+sentencepiece
+protobuf
+numpy
+pillow
