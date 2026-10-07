@@ -6,17 +6,6 @@
 </p>
 
 <p align="center">
-  <a href="https://www.cs.toronto.edu/~rajabi/">Javad Rajabi</a><sup>*</sup> ·
-  <a href="https://kooroshrh.github.io/">Koorosh Roohi</a><sup>*</sup> ·
-  <a href="https://davidlindell.com/">David B. Lindell</a> ·
-  <a href="https://www.cs.toronto.edu/~taati/">Babak Taati</a>
-  <br>
-  University of Toronto · Vector Institute
-  <br>
-  <sup>*</sup>Equal contribution
-</p>
-
-<p align="center">
   <a href="https://rajabi2001.github.io/area/"><img src="https://img.shields.io/badge/Project-Page-blue" alt="Project Page"></a>
   <img src="https://img.shields.io/badge/arXiv-coming%20soon-b31b1b.svg" alt="arXiv">
 </p>
