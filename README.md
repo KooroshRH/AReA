@@ -9,6 +9,7 @@
   <a href="https://rajabi2001.github.io/area/"><img src="https://img.shields.io/badge/Project-Page-blue" alt="Project Page"></a>
   <img src="https://img.shields.io/badge/arXiv-coming%20soon-b31b1b.svg" alt="arXiv">
   <img src="https://img.shields.io/badge/%F0%9F%A4%97%20Paper-coming%20soon-ffd21e.svg" alt="Hugging Face Paper">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-Apache%202.0-green.svg" alt="License: Apache 2.0"></a>
 </p>
 
 <p align="center">
