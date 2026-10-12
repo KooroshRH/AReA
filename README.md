@@ -8,6 +8,11 @@
 <p align="center">
   <a href="https://rajabi2001.github.io/area/"><img src="https://img.shields.io/badge/Project-Page-blue" alt="Project Page"></a>
   <img src="https://img.shields.io/badge/arXiv-coming%20soon-b31b1b.svg" alt="arXiv">
+  <img src="https://img.shields.io/badge/%F0%9F%A4%97%20Paper-coming%20soon-ffd21e.svg" alt="Hugging Face Paper">
+</p>
+
+<p align="center">
+  <a href="https://huggingface.co/spaces/kooroshrh/AReA"><img src="https://huggingface.co/datasets/huggingface/badges/resolve/main/open-in-hf-spaces-md.svg" alt="Open in Hugging Face Spaces"></a>
 </p>
 
 <p align="center">
@@ -48,6 +53,8 @@ pip install -r requirements.txt
 Model weights are downloaded from Hugging Face on first use. Some checkpoints are gated: accept their license on Hugging Face and log in with `huggingface-cli login`.
 
 ## Quick start
+
+To try AReA without installing anything, use the [Hugging Face demo](https://huggingface.co/spaces/kooroshrh/AReA) (FLUX.1, 2K to 4K).
 
 ```bash
 python generate.py --model flux1 \
