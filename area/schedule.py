@@ -23,9 +23,12 @@ def window_count(h: int, w: int, size: int) -> int:
     return len(even_starts(h, size)) * len(even_starts(w, size))
 
 
-def window_step_cost(h: int, w: int, size: int) -> float:
-    """C(w) of Eq. 7: one windowed step in units of one full-attention pass."""
-    return window_count(h, w, size) * float(size) ** 4 / float(h * w) ** 2
+def window_step_cost(h: int, w: int, size: int, txt_len: int = 0) -> float:
+    """C(w) of Eq. 7: one windowed step in units of one full-attention pass. Every window runs
+    its ``txt_len`` text tokens as queries and keys, so it costs ``(size^2 + T)^2`` against
+    ``(h*w + T)^2`` for full attention."""
+    t = float(txt_len)
+    return window_count(h, w, size) * (float(size) ** 2 + t) ** 2 / (float(h * w) + t) ** 2
 
 
 def grid_divisors(h: int, w: int) -> List[int]:
@@ -61,10 +64,10 @@ def pooling_ramp(f0: int, steps: int, h: int, w: int, f_min: int = F_MIN) -> Lis
     return plan
 
 
-def start_window(h: int, w: int, lo: int) -> int:
+def start_window(h: int, w: int, lo: int, txt_len: int = 0) -> int:
     """w_start of Eq. 8: the largest window whose step is cheaper than full attention."""
     for size in range(max(h, w), lo - 1, -1):
-        if window_step_cost(h, w, size) < 1.0 and window_count(h, w, size) > 1:
+        if window_step_cost(h, w, size, txt_len) < 1.0 and window_count(h, w, size) > 1:
             return size
     return lo
 
@@ -80,7 +83,7 @@ def _geometric_sizes(steps: int, start: int, floor: int) -> List[int]:
     return sizes
 
 
-def window_sizes(h: int, w: int, steps: int, start: int, floor: int) -> List[int]:
+def window_sizes(h: int, w: int, steps: int, start: int, floor: int, txt_len: int = 0) -> List[int]:
     """Eqs. 10 and 11: geometric shrink from w_start to w_min, each rung snapped down so it
     never costs more than the first one and sizes strictly decrease."""
     if steps <= 0:
@@ -88,15 +91,16 @@ def window_sizes(h: int, w: int, steps: int, start: int, floor: int) -> List[int
     ideal = _geometric_sizes(steps, start, floor)
     if start - floor < steps - 1:
         return ideal
-    cap = window_step_cost(h, w, start)
+    cap = window_step_cost(h, w, start, txt_len)
     sizes: List[int] = []
     for i, target in enumerate(ideal):
         lo = floor + steps - i - 1
         hi = start if not sizes else min(int(target), sizes[-1] - 1)
         hi = max(hi, lo)
-        pick = next((s for s in range(hi, lo - 1, -1) if window_step_cost(h, w, s) <= cap + 1e-12), None)
+        pick = next((s for s in range(hi, lo - 1, -1) if window_step_cost(h, w, s, txt_len) <= cap + 1e-12),
+                    None)
         if pick is None:
-            pick = min(range(lo, hi + 1), key=lambda s: window_step_cost(h, w, s))
+            pick = min(range(lo, hi + 1), key=lambda s: window_step_cost(h, w, s, txt_len))
         sizes.append(pick)
     return sizes
 
@@ -121,6 +125,7 @@ class Schedule:
 
 def build_schedule(
     h: int, w: int, steps: int, phase1_steps: int, native: int, w_min: Optional[int] = None,
+    txt_len: int = 0,
 ) -> Schedule:
     """Schedule for an ``h x w`` patch grid over ``steps`` denoising steps."""
     phase1_steps = max(0, min(int(phase1_steps), int(steps)))
@@ -132,5 +137,5 @@ def build_schedule(
     if phase2_steps:
         handoff = extent // (factors[-1] if factors else 1)
         lo = max(w_min, min(handoff, extent))
-        windows = window_sizes(h, w, phase2_steps, start_window(h, w, lo), w_min)
+        windows = window_sizes(h, w, phase2_steps, start_window(h, w, lo, txt_len), w_min, txt_len)
     return Schedule((h, w), tuple(factors), tuple(windows))

@@ -56,13 +56,13 @@ class Backbone:
         step = int(torch.argmin((ref - value).abs()))
         return step + self.step_offset, len(scheduler.timesteps) + self.step_offset
 
-    def schedule(self, h: int, w: int, steps: int) -> Optional[Schedule]:
+    def schedule(self, h: int, w: int, steps: int, txt_len: int = 0) -> Optional[Schedule]:
         """The schedule for this canvas, or None at or below the native extent (plain attention)."""
         if max(h, w) <= self.native:
             return None
         phase1 = self.config.phase1_steps if self.config.phase1_steps is not None else self.phase1_steps
-        key = (h, w, steps, phase1)
+        key = (h, w, steps, phase1, txt_len)
         if key != self._schedule_key:
-            self._schedule = build_schedule(h, w, steps, phase1, self.native)
+            self._schedule = build_schedule(h, w, steps, phase1, self.native, txt_len=txt_len)
             self._schedule_key = key
         return self._schedule

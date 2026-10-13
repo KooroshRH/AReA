@@ -108,6 +108,31 @@ class FineLayout:
     registers: int                       # R bridge tokens per window (0 = no bridge)
 
 
+def fit_extra_keys(windows: List[tiling.Window], h: int, w: int, txt_len: int, registers: int,
+                   halo: int) -> Tuple[int, int]:
+    """Bridge count and Halo width that keep one Phase II step at or below full attention.
+
+    Each window runs ``T + n`` queries (text and its image tokens) against ``T + n`` keys plus its
+    Halo ring and ``R`` bridge tokens, so the step costs ``sum (T+n)(T+n+ring+R)`` against
+    ``(T + h*w)^2``. The Halo is priced at its full width, the most any window can draw. The
+    bridge is cut first, to the largest count that fits; the Halo narrows only if the step is
+    still above full attention without any bridge tokens.
+    """
+    full = float(txt_len + h * w) ** 2
+    rows = [float(txt_len + win.area) for win in windows]
+
+    def local(depth: int) -> float:
+        return sum(q * (q + tiling.ring_size(win, depth, h, w)) for q, win in zip(rows, windows))
+
+    room = full - local(halo)
+    if room >= registers * sum(rows):
+        return registers, halo
+    if room >= 0:
+        return int(room // sum(rows)), halo
+    depth = next((d for d in range(halo, -1, -1) if local(d) <= full), 0)
+    return 0, depth
+
+
 def build_fine_layout(windows: List[tiling.Window], h: int, w: int, halo: int, registers: int,
                       seed: int, step: int, dtype: torch.dtype, device) -> FineLayout:
     n_img = h * w

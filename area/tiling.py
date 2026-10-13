@@ -174,7 +174,8 @@ def adaptive_tiling(
         return boxes
 
     def cost(win: Window) -> float:
-        return win.area * float(txt_len + win.area)
+        # text tokens are queries and keys of every window
+        return float(txt_len + win.area) ** 2
 
     budget = total = sum(cost(box) for box in boxes)
     smooth = -e
@@ -205,6 +206,15 @@ def window_tokens(win: Window, w: int, device) -> torch.Tensor:
     rows = torch.arange(win.r0, win.r1 + 1, device=device)
     cols = torch.arange(win.c0, win.c1 + 1, device=device)
     return (rows[:, None] * w + cols[None, :]).reshape(-1)
+
+
+def ring_size(win: Window, depth: int, h: int, w: int) -> int:
+    """Number of tokens in ``halo_ring(win, depth, ...)``."""
+    if depth <= 0:
+        return 0
+    rows = min(h - 1, win.r1 + depth) - max(0, win.r0 - depth) + 1
+    cols = min(w - 1, win.c1 + depth) - max(0, win.c0 - depth) + 1
+    return rows * cols - win.area
 
 
 def halo_ring(win: Window, depth: int, h: int, w: int, device) -> Optional[torch.Tensor]:

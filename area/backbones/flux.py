@@ -133,7 +133,7 @@ class FluxBackbone(Backbone):
         text = kwargs.get("encoder_hidden_states", args[1] if len(args) > 1 else None)
         h, w = _grid(img_ids)
         step, total = self.locate(timestep)
-        schedule = self.schedule(h, w, total)
+        schedule = self.schedule(h, w, total, int(text.shape[1]))
         st = self.state
         st.phase = None
         if schedule is None:
@@ -157,8 +157,10 @@ class FluxBackbone(Backbone):
         windows = tiling.adaptive_tiling(
             energy, st.h, st.w, st.size, w_min, st.txt_len, rng=tiling.step_rng(cfg.seed, st.step, 0x5EA1))
         registers = max(1, int(round(st.size * cfg.bridge_ratio))) ** 2 if cfg.bridge_ratio > 0 else 0
+        # never cost more than a full-attention step: cut bridge tokens, then the Halo
+        registers, halo = attention.fit_extra_keys(windows, st.h, st.w, st.txt_len, registers, cfg.halo)
         st.data["layout"] = attention.build_fine_layout(
-            windows, st.h, st.w, cfg.halo, registers, cfg.seed, st.step, output.dtype, output.device)
+            windows, st.h, st.w, halo, registers, cfg.seed, st.step, output.dtype, output.device)
 
     # ---- rotary embeddings -------------------------------------------------
 
