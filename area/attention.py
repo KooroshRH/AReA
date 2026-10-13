@@ -140,9 +140,12 @@ def build_fine_layout(windows: List[tiling.Window], h: int, w: int, halo: int, r
     coverage = torch.zeros(n_img, dtype=dtype, device=device)
     for idx in tokens:
         coverage[idx] += 1.0
+    # every side of every window draws its own Halo width in [0, halo], fresh at each step, and every
+    # row or column along that side its own reach; the ring keeps the size of the straight-edged one
     rng = tiling.step_rng(seed, step, 0x4A10) if halo > 0 else None
-    rings = [tiling.halo_ring(win, int(rng.integers(0, halo + 1)), h, w, device) if rng is not None else None
-             for win in windows]
+    rings = [tiling.jagged_halo_ring(win, tuple(int(d) for d in rng.integers(0, halo + 1, size=4)), halo, h, w,
+                                     rng, device)
+             if rng is not None else None for win in windows]
     weights = tiling.merge_weights(windows, tokens, n_img, dtype, device)
     by_key: dict = {}
     for i, idx in enumerate(tokens):

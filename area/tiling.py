@@ -2,7 +2,7 @@
 
 import math
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import List, Optional, Sequence, Tuple, Union
 
 import numpy as np
 import torch
@@ -208,24 +208,86 @@ def window_tokens(win: Window, w: int, device) -> torch.Tensor:
     return (rows[:, None] * w + cols[None, :]).reshape(-1)
 
 
-def ring_size(win: Window, depth: int, h: int, w: int) -> int:
+def _grown_box(win: Window, depth: Union[int, Sequence[int]], h: int, w: int) -> Tuple[int, int, int, int]:
+    """The window's box grown by ``depth`` and clipped to the grid, as inclusive ``(r0, r1, c0, c1)``.
+
+    ``depth`` is one width for all four sides or ``(top, bottom, left, right)``.
+    """
+    top, bottom, left, right = (depth,) * 4 if isinstance(depth, int) else depth
+    return (max(0, win.r0 - top), min(h - 1, win.r1 + bottom),
+            max(0, win.c0 - left), min(w - 1, win.c1 + right))
+
+
+def ring_size(win: Window, depth: Union[int, Sequence[int]], h: int, w: int) -> int:
     """Number of tokens in ``halo_ring(win, depth, ...)``."""
-    if depth <= 0:
-        return 0
-    rows = min(h - 1, win.r1 + depth) - max(0, win.r0 - depth) + 1
-    cols = min(w - 1, win.c1 + depth) - max(0, win.c0 - depth) + 1
-    return rows * cols - win.area
+    r0, r1, c0, c1 = _grown_box(win, depth, h, w)
+    return (r1 - r0 + 1) * (c1 - c0 + 1) - win.area
 
 
-def halo_ring(win: Window, depth: int, h: int, w: int, device) -> Optional[torch.Tensor]:
-    """Tokens of the window's box grown by ``depth`` and clipped to the grid, minus the window."""
-    if depth <= 0:
+def halo_ring(win: Window, depth: Union[int, Sequence[int]], h: int, w: int, device) -> Optional[torch.Tensor]:
+    """Tokens of the window's box grown by ``depth`` and clipped to the grid, minus the window.
+
+    ``depth`` is one width for all four sides or ``(top, bottom, left, right)``.
+    """
+    if ring_size(win, depth, h, w) <= 0:
         return None
-    rows = torch.arange(max(0, win.r0 - depth), min(h - 1, win.r1 + depth) + 1, device=device)
-    cols = torch.arange(max(0, win.c0 - depth), min(w - 1, win.c1 + depth) + 1, device=device)
+    r0, r1, c0, c1 = _grown_box(win, depth, h, w)
+    rows = torch.arange(r0, r1 + 1, device=device)
+    cols = torch.arange(c0, c1 + 1, device=device)
     rr, cc = rows[:, None], cols[None, :]
     outside = (rr < win.r0) | (rr > win.r1) | (cc < win.c0) | (cc > win.c1)
     return (rr * w + cc)[outside]
+
+
+def _side_profile(total: int, length: int, cap: int, rng: np.random.Generator) -> np.ndarray:
+    """``length`` random reaches in ``[0, cap]`` that sum to ``total``."""
+    depth = rng.integers(0, cap + 1, size=length)
+    gap = total - int(depth.sum())
+    while gap != 0:
+        room = np.flatnonzero(depth < cap) if gap > 0 else np.flatnonzero(depth > 0)
+        pick = rng.choice(room, size=min(abs(gap), room.size), replace=False)
+        depth[pick] += 1 if gap > 0 else -1
+        gap -= int(np.sign(gap)) * pick.size
+    return depth
+
+
+def jagged_halo_ring(win: Window, depth: Sequence[int], halo: int, h: int, w: int,
+                     rng: np.random.Generator, device) -> Optional[torch.Tensor]:
+    """``halo_ring`` with an uneven edge: every row (left, right) or column (top, bottom) of a side
+    reaches its own random distance in ``[0, halo]``, and the reaches of a side sum to what the
+    straight edge of ``depth`` would hold. The ring keeps ``ring_size(win, depth, ...)`` tokens, and
+    its corners stay the blocks between the two sides' widths.
+    """
+    if ring_size(win, depth, h, w) <= 0:
+        return None
+    r0, r1, c0, c1 = _grown_box(win, depth, h, w)
+    top, bottom, left, right = win.r0 - r0, r1 - win.r1, win.c0 - c0, c1 - win.c1   # widths after clipping
+    rooms = (win.r0, h - 1 - win.r1, win.c0, w - 1 - win.c1)
+    rows_in = np.arange(win.r0, win.r1 + 1)
+    cols_in = np.arange(win.c0, win.c1 + 1)
+    parts = []
+    for width, room, along, side in ((top, rooms[0], cols_in, "top"), (bottom, rooms[1], cols_in, "bottom"),
+                                     (left, rooms[2], rows_in, "left"), (right, rooms[3], rows_in, "right")):
+        if width <= 0:
+            continue
+        cap = min(halo, room)
+        reach = _side_profile(width * along.size, along.size, cap, rng)
+        k = np.arange(1, cap + 1)[:, None]
+        keep = k <= reach[None, :]
+        if side == "top":
+            rr, cc = win.r0 - k, along[None, :]
+        elif side == "bottom":
+            rr, cc = win.r1 + k, along[None, :]
+        elif side == "left":
+            rr, cc = along[None, :], win.c0 - k
+        else:
+            rr, cc = along[None, :], win.c1 + k
+        parts.append(np.broadcast_to(rr * w + cc, keep.shape)[keep])
+    for rows, cols in ((np.arange(r0, win.r0), np.arange(c0, win.c0)), (np.arange(r0, win.r0), np.arange(win.c1 + 1, c1 + 1)),
+                       (np.arange(win.r1 + 1, r1 + 1), np.arange(c0, win.c0)),
+                       (np.arange(win.r1 + 1, r1 + 1), np.arange(win.c1 + 1, c1 + 1))):
+        parts.append((rows[:, None] * w + cols[None, :]).reshape(-1))
+    return torch.from_numpy(np.concatenate(parts)).to(device)
 
 
 def merge_weights(windows: List[Window], tokens: List[torch.Tensor], n_img: int,
