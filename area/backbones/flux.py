@@ -157,10 +157,11 @@ class FluxBackbone(Backbone):
         windows = tiling.adaptive_tiling(
             energy, st.h, st.w, st.size, w_min, st.txt_len, rng=tiling.step_rng(cfg.seed, st.step, 0x5EA1))
         registers = max(1, int(round(st.size * cfg.bridge_ratio))) ** 2 if cfg.bridge_ratio > 0 else 0
+        widths = tiling.halo_widths(windows, st.h, st.w, cfg.halo, tiling.step_rng(cfg.seed, st.step, 0x4A11))
         # never cost more than a full-attention step: cut bridge tokens, then the Halo
-        registers, halo = attention.fit_extra_keys(windows, st.h, st.w, st.txt_len, registers, cfg.halo)
+        registers, widths = attention.fit_extra_keys(windows, st.h, st.w, st.txt_len, registers, widths)
         st.data["layout"] = attention.build_fine_layout(
-            windows, st.h, st.w, halo, registers, cfg.seed, st.step, output.dtype, output.device)
+            windows, st.h, st.w, widths, cfg.halo, registers, cfg.seed, st.step, output.dtype, output.device)
 
     # ---- rotary embeddings -------------------------------------------------
 

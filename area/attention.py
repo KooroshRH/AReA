@@ -109,43 +109,46 @@ class FineLayout:
 
 
 def fit_extra_keys(windows: List[tiling.Window], h: int, w: int, txt_len: int, registers: int,
-                   halo: int) -> Tuple[int, int]:
-    """Bridge count and Halo width that keep one Phase II step at or below full attention.
+                   widths: List[Tuple[int, int, int, int]]) -> Tuple[int, List[Tuple[int, int, int, int]]]:
+    """Bridge count and Halo widths that keep one Phase II step at or below full attention.
 
     Each window runs ``T + n`` queries (text and its image tokens) against ``T + n`` keys plus its
     Halo ring and ``R`` bridge tokens, so the step costs ``sum (T+n)(T+n+ring+R)`` against
-    ``(T + h*w)^2``. The Halo is priced at its full width, the most any window can draw. The
-    bridge is cut first, to the largest count that fits; the Halo narrows only if the step is
+    ``(T + h*w)^2``. The rings are priced at the widths drawn by ``tiling.halo_widths``. The bridge
+    is cut first, to the largest count that fits; the Halo widths are capped only if the step is
     still above full attention without any bridge tokens.
     """
     full = float(txt_len + h * w) ** 2
     rows = [float(txt_len + win.area) for win in windows]
 
-    def local(depth: int) -> float:
-        return sum(q * (q + tiling.ring_size(win, depth, h, w)) for q, win in zip(rows, windows))
+    def capped(cap: int) -> List[Tuple[int, int, int, int]]:
+        return [tuple(min(d, cap) for d in sides) for sides in widths]
 
-    room = full - local(halo)
+    def local(cap: int) -> float:
+        return sum(q * (q + tiling.ring_size(win, sides, h, w)) for q, win, sides in zip(rows, windows, capped(cap)))
+
+    widest = max((max(sides) for sides in widths), default=0)
+    room = full - local(widest)
     if room >= registers * sum(rows):
-        return registers, halo
+        return registers, widths
     if room >= 0:
-        return int(room // sum(rows)), halo
-    depth = next((d for d in range(halo, -1, -1) if local(d) <= full), 0)
-    return 0, depth
+        return int(room // sum(rows)), widths
+    cap = next((c for c in range(widest, -1, -1) if local(c) <= full), 0)
+    return 0, capped(cap)
 
 
-def build_fine_layout(windows: List[tiling.Window], h: int, w: int, halo: int, registers: int,
-                      seed: int, step: int, dtype: torch.dtype, device) -> FineLayout:
+def build_fine_layout(windows: List[tiling.Window], h: int, w: int, widths: List[Tuple[int, int, int, int]],
+                      halo: int, registers: int, seed: int, step: int, dtype: torch.dtype, device) -> FineLayout:
     n_img = h * w
     tokens = [tiling.window_tokens(win, w, device) for win in windows]
     coverage = torch.zeros(n_img, dtype=dtype, device=device)
     for idx in tokens:
         coverage[idx] += 1.0
-    # every side of every window draws its own Halo width in [0, halo], fresh at each step, and every
-    # row or column along that side its own reach; the ring keeps the size of the straight-edged one
+    # the side widths come from tiling.halo_widths; every row or column along a side draws its own
+    # reach, fresh at each step, and the ring keeps the size of the straight-edged one
     rng = tiling.step_rng(seed, step, 0x4A10) if halo > 0 else None
-    rings = [tiling.jagged_halo_ring(win, tuple(int(d) for d in rng.integers(0, halo + 1, size=4)), halo, h, w,
-                                     rng, device)
-             if rng is not None else None for win in windows]
+    rings = [tiling.jagged_halo_ring(win, sides, halo, h, w, rng, device) if rng is not None else None
+             for win, sides in zip(windows, widths)]
     weights = tiling.merge_weights(windows, tokens, n_img, dtype, device)
     by_key: dict = {}
     for i, idx in enumerate(tokens):

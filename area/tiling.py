@@ -14,7 +14,6 @@ DWT_PAD = 8
 GATE_LO, GATE_HI = 0.05, 0.25
 SPLIT_QUANTILE = 0.5
 DEDUPE_COVER = 0.8
-BLEND_FLOOR = 0.05
 _CHUNK_TOKENS = 8192
 
 
@@ -239,12 +238,46 @@ def halo_ring(win: Window, depth: Union[int, Sequence[int]], h: int, w: int, dev
     return (rr * w + cc)[outside]
 
 
-def _side_profile(total: int, length: int, cap: int, rng: np.random.Generator) -> np.ndarray:
-    """``length`` random reaches in ``[0, cap]`` that sum to ``total``."""
-    depth = rng.integers(0, cap + 1, size=length)
+def halo_widths(windows: List[Window], h: int, w: int, halo: int,
+                rng: np.random.Generator) -> List[Tuple[int, int, int, int]]:
+    """``(top, bottom, left, right)`` Halo width of every window.
+
+    Each side draws its width on ``{halo // 2, ..., halo}``, then widens where the neighbouring
+    windows overlap it by little, so that overlap plus Halo reaches ``2 * halo`` along the whole
+    side. A side at the canvas edge keeps its draw (the ring is clipped there anyway).
+    """
+    if halo <= 0:
+        return [(0, 0, 0, 0)] * len(windows)
+    # the farthest any window covering a token reaches up, down, left and right
+    up, down = np.full((h, w), h), np.full((h, w), -1)
+    left, right = np.full((h, w), w), np.full((h, w), -1)
+    for win in windows:
+        box = (slice(win.r0, win.r1 + 1), slice(win.c0, win.c1 + 1))
+        up[box] = np.minimum(up[box], win.r0)
+        down[box] = np.maximum(down[box], win.r1)
+        left[box] = np.minimum(left[box], win.c0)
+        right[box] = np.maximum(right[box], win.c1)
+    target = 2 * halo
+    widths = []
+    for win in windows:
+        cols, rows = slice(win.c0, win.c1 + 1), slice(win.r0, win.r1 + 1)
+        overlap = (
+            int((down[win.r0 - 1, cols] - win.r0 + 1).min()) if win.r0 > 0 else target,
+            int((win.r1 - up[win.r1 + 1, cols] + 1).min()) if win.r1 < h - 1 else target,
+            int((right[rows, win.c0 - 1] - win.c0 + 1).min()) if win.c0 > 0 else target,
+            int((win.c1 - left[rows, win.c1 + 1] + 1).min()) if win.c1 < w - 1 else target,
+        )
+        drawn = rng.integers(halo // 2, halo + 1, size=4)
+        widths.append(tuple(max(int(d), target - max(o, 0)) for d, o in zip(drawn, overlap)))
+    return widths
+
+
+def _side_profile(total: int, length: int, lo: int, cap: int, rng: np.random.Generator) -> np.ndarray:
+    """``length`` random reaches in ``[lo, cap]`` that sum to ``total``."""
+    depth = rng.integers(lo, cap + 1, size=length)
     gap = total - int(depth.sum())
     while gap != 0:
-        room = np.flatnonzero(depth < cap) if gap > 0 else np.flatnonzero(depth > 0)
+        room = np.flatnonzero(depth < cap) if gap > 0 else np.flatnonzero(depth > lo)
         pick = rng.choice(room, size=min(abs(gap), room.size), replace=False)
         depth[pick] += 1 if gap > 0 else -1
         gap -= int(np.sign(gap)) * pick.size
@@ -254,9 +287,10 @@ def _side_profile(total: int, length: int, cap: int, rng: np.random.Generator) -
 def jagged_halo_ring(win: Window, depth: Sequence[int], halo: int, h: int, w: int,
                      rng: np.random.Generator, device) -> Optional[torch.Tensor]:
     """``halo_ring`` with an uneven edge: every row (left, right) or column (top, bottom) of a side
-    reaches its own random distance in ``[0, halo]``, and the reaches of a side sum to what the
-    straight edge of ``depth`` would hold. The ring keeps ``ring_size(win, depth, ...)`` tokens, and
-    its corners stay the blocks between the two sides' widths.
+    reaches its own random distance in ``[halo // 2, halo]`` (a side widened past ``halo`` keeps a
+    straight edge), and the reaches of a side sum to what the straight edge of ``depth`` would hold.
+    The ring keeps ``ring_size(win, depth, ...)`` tokens, and its corners stay the blocks between the
+    two sides' widths.
     """
     if ring_size(win, depth, h, w) <= 0:
         return None
@@ -270,8 +304,8 @@ def jagged_halo_ring(win: Window, depth: Sequence[int], halo: int, h: int, w: in
                                      (left, rooms[2], rows_in, "left"), (right, rooms[3], rows_in, "right")):
         if width <= 0:
             continue
-        cap = min(halo, room)
-        reach = _side_profile(width * along.size, along.size, cap, rng)
+        cap = min(max(halo, width), room)
+        reach = _side_profile(width * along.size, along.size, min(halo // 2, width), cap, rng)
         k = np.arange(1, cap + 1)[:, None]
         keep = k <= reach[None, :]
         if side == "top":
@@ -292,19 +326,21 @@ def jagged_halo_ring(win: Window, depth: Sequence[int], halo: int, h: int, w: in
 
 def merge_weights(windows: List[Window], tokens: List[torch.Tensor], n_img: int,
                   dtype: torch.dtype, device) -> List[torch.Tensor]:
-    """Centre-weighted merge: a separable raised cosine per window, rescaled so the weights
-    covering a token sum to its coverage count (a token in one window keeps weight 1)."""
+    """Centre-weighted merge: a separable raised cosine per window that falls to zero at the
+    window's edges, so a window enters the blend gradually, rescaled so the weights covering a
+    token sum to its coverage count (a token in one window keeps weight 1)."""
     raw = []
     for win in windows:
         r = torch.arange(win.height, device=device, dtype=torch.float32)
         c = torch.arange(win.width, device=device, dtype=torch.float32)
         fr = torch.sin(math.pi * (r + 0.5) / win.height) ** 2
         fc = torch.sin(math.pi * (c + 0.5) / win.width) ** 2
-        raw.append((BLEND_FLOOR + (1.0 - BLEND_FLOOR) * fr[:, None] * fc[None, :]).reshape(-1))
+        raw.append((fr[:, None] * fc[None, :]).reshape(-1))
     total = torch.zeros(n_img, dtype=torch.float32, device=device)
     count = torch.zeros(n_img, dtype=torch.float32, device=device)
     for idx, weight in zip(tokens, raw):
         total.index_add_(0, idx, weight)
         count[idx] += 1.0
-    scale = count / total.clamp(min=1e-8)
+    # a window corner weighs ~(pi / 2w)^4, so only uncovered tokens (count 0) may meet the clamp
+    scale = count / total.clamp(min=torch.finfo(torch.float32).tiny)
     return [(weight * scale[idx]).to(dtype) for idx, weight in zip(tokens, raw)]
