@@ -28,8 +28,9 @@ AReA never computes full attention at the target resolution and needs no RoPE ex
 
 ## News
 
+- **[2026-10-19]** Ideogram 4 support, and `--multi-gpu` to spread a model over several GPUs.
 - **[2026-10]** Code released with FLUX.1 support, together with the HRGen-1K benchmark prompts.
-- **Coming soon:** Qwen-Image, FLUX.2 and Ideogram 4.
+- **Coming soon:** Qwen-Image and FLUX.2.
 
 ## Supported models
 
@@ -38,7 +39,7 @@ AReA never computes full attention at the target resolution and needs no RoPE ex
 | FLUX.1 | `flux1` | [`black-forest-labs/FLUX.1-Krea-dev`](https://huggingface.co/black-forest-labs/FLUX.1-Krea-dev) | Available |
 | Qwen-Image | | | Coming soon |
 | FLUX.2 | | | Coming soon |
-| Ideogram 4 | | | Coming soon |
+| Ideogram 4 | `ideogram4` | [`ideogram-ai/ideogram-4-nf4-diffusers`](https://huggingface.co/ideogram-ai/ideogram-4-nf4-diffusers) | Available |
 
 AReA scales up from a *base resolution*: Phase I pools keys and values onto a grid that fits it, and Phase II windows shrink down to it. The base is 1024 px for FLUX.1. For Ideogram 4, whose native resolution is 2048 px, it is 1024 px up to 4096 × 4096 and 2048 px, the largest it can be, above. AReA works best for targets about 3× the base or more.
 
@@ -71,7 +72,9 @@ python generate.py --model flux1 --checkpoint black-forest-labs/FLUX.1-dev \
   --prompt "..." --height 4096 --width 4096
 ```
 
-On GPUs with less than 60 GB of memory, idle models are offloaded to the CPU automatically.
+With `--model ideogram4`, the prompt is first expanded by Ideogram 4's prompt enhancer.
+
+On GPUs with less than 60 GB of memory, idle models are offloaded to the CPU automatically. `--multi-gpu` spreads the model over all visible GPUs instead, for canvases that do not fit on one.
 
 ## Using AReA in your own code
 
@@ -101,6 +104,8 @@ image.save("village.png")
 area.remove()                # back to the original attention
 ```
 
+For Ideogram 4, load the pipeline with `area.pipelines.SlimIdeogram4Pipeline` instead of diffusers' `Ideogram4Pipeline`; it uses the same weights and fits much larger canvases in memory.
+
 Canvases at or below the model's native resolution keep the original attention. Height and width must divide into whole patches, and the two patch counts must share a factor of at least 2, since Phase I pools *f × f* blocks.
 
 ## Options
@@ -115,7 +120,7 @@ Canvases at or below the model's native resolution keep the original attention. 
 
 The switch is a noise level rather than a step count because models differ in noise schedules and step counts (Appendix A.3 of the paper), so one σ\* lands on different steps for different models, step counts and, for Ideogram 4, resolutions. To try AReA on another model, search σ\* between 0.86 and 0.96, where the defaults of the models we tuned lie, instead of reusing another model's number of Phase I steps.
 
-Other `generate.py` flags: `--model`, `--checkpoint`, `--height`, `--width`, `--steps`, `--guidance`, `--offload`, `--output-dir`, and `--prompt-file` to generate a whole prompt list. Run `python generate.py --help` for details and defaults.
+Other `generate.py` flags: `--model`, `--checkpoint`, `--height`, `--width`, `--steps`, `--guidance`, `--offload`, `--multi-gpu`, `--output-dir`, and `--prompt-file` to generate a whole prompt list. Run `python generate.py --help` for details and defaults.
 
 ## HRGen-1K
 
@@ -134,7 +139,9 @@ AReA/
 │   ├── attention.py     # cross-scale coarse attention and windowed fine attention
 │   ├── tiling.py        # base tiling, DWT detail map, splits, Halo, merge weights
 │   ├── bridge.py        # global-KV bridge token selection
-│   └── backbones/       # one adapter per model family
+│   ├── multi_gpu.py     # spreading a model over several GPUs
+│   ├── backbones/       # one adapter per model family
+│   └── pipelines/       # memory-efficient pipelines (Ideogram 4)
 ├── generate.py          # command-line generation
 ├── HRGen-1K/            # benchmark prompts
 └── assets/

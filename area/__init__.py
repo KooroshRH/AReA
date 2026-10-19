@@ -40,8 +40,8 @@ class AReAConfig:
 class AReA:
     """Runs a diffusers pipeline with AReA attention.
 
-    Attaching swaps the transformer's attention processors and adds two hooks; the pipeline is
-    then called as usual. Canvases at or below the model's native resolution keep plain attention.
+    Attaching modifies the pipeline in place; the pipeline is then called as usual. Canvases at
+    or below the model's native resolution keep plain attention.
     """
 
     def __init__(self, pipe, config: Optional[AReAConfig] = None, **kwargs):

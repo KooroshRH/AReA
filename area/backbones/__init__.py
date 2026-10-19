@@ -1,6 +1,7 @@
 from .flux import FluxBackbone
+from .ideogram import IdeogramBackbone
 
-BACKBONES = (FluxBackbone,)
+BACKBONES = (FluxBackbone, IdeogramBackbone)
 
 
 def find_backbone(pipe):
