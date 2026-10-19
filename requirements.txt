@@ -1,7 +1,9 @@
 torch>=2.4
-diffusers>=0.35
-transformers>=4.45
+diffusers==0.40.*
+transformers>=4.57
 accelerate>=0.30
+bitsandbytes>=0.43.3
+outlines>=1.0
 sentencepiece
 protobuf
 numpy

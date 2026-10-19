@@ -13,7 +13,7 @@ from .. import attention, tiling
 from .base import Backbone
 
 NATIVE_PATCHES = 64          # 1024 px / 16 px per patch
-PHASE1_STEPS = 8             # of 28
+SWITCH_SIGMA = 0.89          # Phase II from step 8 of 28
 BOOTSTRAP_SIDE = 1024
 
 
@@ -58,21 +58,22 @@ class FluxAReAProcessor:
             return self.plain(attn, hidden_states, encoder_hidden_states, attention_mask, image_rotary_emb)
 
         query, key, value = _qkv(attn, hidden_states, encoder_hidden_states)
+        data = st.on(query.device)
         t = st.txt_len
         if st.phase == "coarse":
             key, value = attention.pool_keys_values(
                 key, value, t, st.h, st.w, st.size, self.backbone.config.pooling,
                 seed=self.backbone.config.seed, step=st.step, block=self.block,
             )
-            query = apply_rotary_emb(query, st.data["rope_q"], sequence_dim=1)
-            key = apply_rotary_emb(key, st.data["rope_kv"], sequence_dim=1)
+            query = apply_rotary_emb(query, data["rope_q"], sequence_dim=1)
+            key = apply_rotary_emb(key, data["rope_kv"], sequence_dim=1)
             out = dispatch_attention_fn(query, key, value, attn_mask=None, backend=self._attention_backend)
         else:
-            q = apply_rotary_emb(query, st.data["rope"], sequence_dim=1)
-            k = apply_rotary_emb(key, st.data["rope"], sequence_dim=1)
+            q = apply_rotary_emb(query, data["rope"], sequence_dim=1)
+            k = apply_rotary_emb(key, data["rope"], sequence_dim=1)
             out_txt, out_img = attention.windowed_attention(
                 q[:, :t], k[:, :t], value[:, :t], q[:, t:], k[:, t:], value[:, t:], key[:, t:],
-                st.data["layout"], backend=self._attention_backend,
+                data["layout"], backend=self._attention_backend,
             )
             out = torch.cat([out_txt, out_img], dim=1)
         out = out.flatten(2, 3).to(query.dtype)
@@ -96,7 +97,7 @@ def _grid(img_ids: torch.Tensor) -> Tuple[int, int]:
 
 class FluxBackbone(Backbone):
     native = NATIVE_PATCHES
-    phase1_steps = PHASE1_STEPS
+    switch_sigma = SWITCH_SIGMA
 
     @classmethod
     def supports(cls, pipe) -> bool:
@@ -123,7 +124,7 @@ class FluxBackbone(Backbone):
         self.pipe.transformer.set_attn_processor(self._saved_processors)
         self.pipe.scheduler = self._scheduler
         self._ropes = {}
-        self.state.phase = None
+        self.state.clear()
 
     # ---- per step ----------------------------------------------------------
 
@@ -135,7 +136,7 @@ class FluxBackbone(Backbone):
         step, total = self.locate(timestep)
         schedule = self.schedule(h, w, total, int(text.shape[1]))
         st = self.state
-        st.phase = None
+        st.clear()
         if schedule is None:
             return
         st.phase, st.size = schedule.at(step)
@@ -199,10 +200,13 @@ class FluxBackbone(Backbone):
         whose latent is upsampled to the target size and re-noised to the level where Phase II
         begins; Phase II then runs unchanged."""
         pipe = self.pipe
-        phase1 = self.config.phase1_steps if self.config.phase1_steps is not None else self.phase1_steps
-        if not 0 < phase1 < num_inference_steps:
-            raise ValueError("bootstrap needs 0 < phase1_steps < num_inference_steps")
         device = pipe._execution_device
+        base_sigmas = np.linspace(1.0, 1.0 / num_inference_steps, num_inference_steps)
+        mu = pipe.scheduler.config.max_shift
+        pipe.scheduler.set_timesteps(sigmas=base_sigmas, mu=mu, device=device)
+        phase1 = self.phase1_steps()
+        if not 0 < phase1 < num_inference_steps:
+            raise ValueError("bootstrap needs a switch_sigma with denoising steps on both sides of it")
         dtype = pipe.transformer.dtype
         scale = min(1.0, BOOTSTRAP_SIDE / max(height, width))
         m = pipe.vae_scale_factor * 2
@@ -219,9 +223,7 @@ class FluxBackbone(Backbone):
         clean = pipe._pack_latents(latents, latents.shape[0], latents.shape[1], lat_h, lat_w)
         clean = clean.to(device=device, dtype=dtype)
 
-        base_sigmas = np.linspace(1.0, 1.0 / num_inference_steps, num_inference_steps)
-        mu = pipe.scheduler.config.max_shift
-        pipe.scheduler.set_timesteps(sigmas=base_sigmas, mu=mu, device=device)
+        pipe.scheduler.set_timesteps(sigmas=base_sigmas, mu=mu, device=device)  # the low-resolution run reset it
         start = pipe.scheduler.timesteps[phase1].reshape(1)
         generator.manual_seed(seed)
         noise = torch.randn(clean.shape, generator=generator, device=device, dtype=dtype)

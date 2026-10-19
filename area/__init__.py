@@ -20,17 +20,21 @@ __all__ = ["AReA", "AReAConfig", "POOLING"]
 
 @dataclass
 class AReAConfig:
-    phase1_steps: Optional[int] = None   # Phase I steps S_c; None uses the backbone default
-    pooling: str = "subsample"           # Phase I: one of POOLING
-    halo: int = 8                        # largest Halo width delta_max, in patches
-    bridge_ratio: float = 0.5            # rho: each window gets (rho * w)^2 bridge tokens
-    seed: int = 0                        # draws of boundary jitter, Halo widths and random pooling
+    switch_sigma: Optional[float] = None  # sigma*: Phase II from the first step at or below this noise level;
+                                          # None uses the backbone default
+    pooling: str = "subsample"            # Phase I: one of POOLING
+    halo: int = 8                         # Halo width delta_max, in patches: sides draw delta_max/2 to delta_max,
+                                          # widened where windows barely overlap
+    bridge_ratio: float = 0.5             # rho: each window gets (rho * w)^2 bridge tokens
+    seed: int = 0                         # draws of boundary jitter, Halo widths and random pooling
 
     def __post_init__(self):
         if self.pooling not in POOLING:
             raise ValueError(f"pooling must be one of {POOLING}, got {self.pooling!r}")
         if self.halo < 0 or self.bridge_ratio < 0:
             raise ValueError("halo and bridge_ratio must be non-negative")
+        if self.switch_sigma is not None and not 0.0 < self.switch_sigma < 1.0:
+            raise ValueError(f"switch_sigma must lie in (0, 1), got {self.switch_sigma}")
 
 
 class AReA:

@@ -40,6 +40,8 @@ AReA never computes full attention at the target resolution and needs no RoPE ex
 | FLUX.2 | | | Coming soon |
 | Ideogram 4 | | | Coming soon |
 
+AReA scales up from a *base resolution*: Phase I pools keys and values onto a grid that fits it, and Phase II windows shrink down to it. The base is 1024 px for FLUX.1. For Ideogram 4, whose native resolution is 2048 px, it is 1024 px up to 4096 × 4096 and 2048 px, the largest it can be, above. AReA works best for targets about 3× the base or more.
+
 ## Installation
 
 ```bash
@@ -73,7 +75,7 @@ On GPUs with less than 60 GB of memory, idle models are offloaded to the CPU aut
 
 ## Using AReA in your own code
 
-AReA attaches in place to a [diffusers](https://github.com/huggingface/diffusers) pipeline of a supported model: it replaces the transformer's attention processors and adds two hooks, and the pipeline is then called as usual. For example, with FLUX.1:
+AReA attaches in place to a [diffusers](https://github.com/huggingface/diffusers) pipeline of a supported model, and the pipeline is then called as usual. For example, with FLUX.1:
 
 ```python
 import torch
@@ -106,10 +108,12 @@ Canvases at or below the model's native resolution keep the original attention. 
 | `AReA(...)` argument | `generate.py` flag | Default | Description |
 |---|---|---|---|
 | `pooling` | `--pooling` | `subsample` | Phase I: the token kept for each *f × f* block. `subsample` (block centre), `mean`, `medoid` or `random`. |
-| `phase1_steps` | `--phase1-steps` | per model | Number of Phase I steps; each model has its own default. |
+| `switch_sigma` | `--switch-sigma` | per model | Noise level σ\* at which Phase II takes over: Phase II starts at the first step whose σ is at or below σ\*. FLUX.1 0.89 (step 8 of 28), Ideogram 4 0.92 (step 20 of 48 at 4096 × 4096). |
 | `halo` | `--halo` | 8 | Largest Halo width δ<sub>max</sub>, in patches. |
 | `bridge_ratio` | `--bridge-ratio` | 0.5 | Global-KV bridge ratio ρ: each window of side *w* gets (ρ*w*)² bridge tokens. |
 | `seed` | `--seed` | 0 | Seed for window boundary jitter, Halo widths and `random` pooling. `generate.py` uses the generation seed. |
+
+The switch is a noise level rather than a step count because models differ in noise schedules and step counts (Appendix A.3 of the paper), so one σ\* lands on different steps for different models, step counts and, for Ideogram 4, resolutions. To try AReA on another model, search σ\* between 0.86 and 0.96, where the defaults of the models we tuned lie, instead of reusing another model's number of Phase I steps.
 
 Other `generate.py` flags: `--model`, `--checkpoint`, `--height`, `--width`, `--steps`, `--guidance`, `--offload`, `--output-dir`, and `--prompt-file` to generate a whole prompt list. Run `python generate.py --help` for details and defaults.
 
