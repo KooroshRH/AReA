@@ -6,7 +6,7 @@ import re
 from pathlib import Path
 
 import torch
-from diffusers import FluxPipeline, Ideogram4PromptEnhancerHead
+from diffusers import FluxPipeline, Ideogram4PromptEnhancerHead, QwenImagePipeline
 
 from area import AReA, POOLING
 from area.multi_gpu import spread_blocks
@@ -14,11 +14,20 @@ from area.pipelines import SlimIdeogram4Pipeline
 
 OFFLOAD_BELOW_GB = 60
 IDEOGRAM_ENHANCER = "diffusers/qwen3-vl-8b-instruct-lm-head"
+# Qwen-Image's own quality suffix, extended with detail terms that name no content, light or style
+QWEN_SUFFIX = (", Ultra HD, 4K, cinematic composition, faithful to the described content, quantities, style and "
+               "medium, coherent fine detail, consistent scale, proportion and perspective, believable light and "
+               "shadow, smooth tonal gradations.")
 
-# guidance None: the pipeline's own guidance schedule; vae_tiling "low_memory": tile only when offloading
+# guidance None: the pipeline's own guidance schedule; vae_tiling "low_memory": tile only when offloading;
+# guidance_arg: the pipeline argument that takes the guidance scale; negative_prompt: turns on true CFG;
+# prompt_suffix: appended to every prompt
 MODELS = {
     "flux1": dict(pipeline=FluxPipeline, checkpoint="black-forest-labs/FLUX.1-Krea-dev", steps=28, guidance=4.5,
                   vae_tiling="always"),
+    "qwen-image": dict(pipeline=QwenImagePipeline, checkpoint="Qwen/Qwen-Image", steps=40, guidance=4.0,
+                       guidance_arg="true_cfg_scale", negative_prompt="", vae_tiling="always",
+                       prompt_suffix=QWEN_SUFFIX),
     "ideogram4": dict(pipeline=SlimIdeogram4Pipeline, checkpoint="ideogram-ai/ideogram-4-nf4-diffusers", steps=48,
                       guidance=None, fallback_guidance=7.0, vae_tiling="low_memory"),
 }
@@ -63,6 +72,8 @@ def main():
     parser.add_argument("--multi-gpu", action="store_true",
                         help="spread the transformer blocks over all visible GPUs, for canvases that do not fit on "
                              "one (adds memory, not speed)")
+    parser.add_argument("--prompt-suffix", action=argparse.BooleanOptionalAction, default=True,
+                        help="append the model's quality suffix to every prompt (Qwen-Image only, QWEN_SUFFIX)")
     parser.add_argument("--output-dir", type=Path, default=Path("outputs"))
     args = parser.parse_args()
     if args.multi_gpu and args.offload:
@@ -99,16 +110,19 @@ def main():
         if guidance is None and steps != model["steps"]:
             guidance = model["fallback_guidance"]
         if guidance is not None:
-            settings["guidance_scale"] = guidance
+            settings[model.get("guidance_arg", "guidance_scale")] = guidance
             if args.model == "ideogram4":
                 settings["guidance_schedule"] = None
+        if "negative_prompt" in model:
+            settings["negative_prompt"] = model["negative_prompt"]
         if upsample:
             settings["prompt_upsampling"] = True
+        text = prompt + (model.get("prompt_suffix", "") if args.prompt_suffix else "")
         if args.bootstrap:
-            image = area.bootstrap(prompt, seed=args.seed, **settings).images[0]
+            image = area.bootstrap(text, seed=args.seed, **settings).images[0]
         else:
             generator = torch.Generator(pipe._execution_device).manual_seed(args.seed)
-            image = pipe(prompt, generator=generator, **settings).images[0]
+            image = pipe(text, generator=generator, **settings).images[0]
         name = f"{slug(prompt)}_{args.width}x{args.height}_seed{args.seed}.png"
         if args.prompt_file:
             name = f"{i:04d}_{name}"

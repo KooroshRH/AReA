@@ -28,20 +28,21 @@ AReA never computes full attention at the target resolution and needs no RoPE ex
 
 ## News
 
+- **[2026-10-30]** Qwen-Image support.
 - **[2026-10-19]** Ideogram 4 support, and `--multi-gpu` to spread a model over several GPUs.
 - **[2026-10]** Code released with FLUX.1 support, together with the HRGen-1K benchmark prompts.
-- **Coming soon:** Qwen-Image and FLUX.2.
+- **Coming soon:** FLUX.2.
 
 ## Supported models
 
 | Model | `--model` | Default checkpoint | Status |
 |---|---|---|---|
 | FLUX.1 | `flux1` | [`black-forest-labs/FLUX.1-Krea-dev`](https://huggingface.co/black-forest-labs/FLUX.1-Krea-dev) | Available |
-| Qwen-Image | | | Coming soon |
+| Qwen-Image | `qwen-image` | [`Qwen/Qwen-Image`](https://huggingface.co/Qwen/Qwen-Image) | Available |
 | FLUX.2 | | | Coming soon |
 | Ideogram 4 | `ideogram4` | [`ideogram-ai/ideogram-4-nf4-diffusers`](https://huggingface.co/ideogram-ai/ideogram-4-nf4-diffusers) | Available |
 
-AReA scales up from a *base resolution*: Phase I pools keys and values onto a grid that fits it, and Phase II windows shrink down to it. The base is 1024 px for FLUX.1. For Ideogram 4, whose native resolution is 2048 px, it is 1024 px up to 4096 × 4096 and 2048 px, the largest it can be, above. AReA works best for targets about 3× the base or more.
+AReA scales up from a *base resolution*: Phase I pools keys and values onto a grid that fits it, and Phase II windows shrink down to it. The base is 1024 px for FLUX.1. Qwen-Image pools onto a grid that fits its 1328 px native resolution, and its windows shrink to 1024 px. For Ideogram 4, whose native resolution is 2048 px, it is 1024 px up to 4096 × 4096 and 2048 px, the largest it can be, above. AReA works best for targets about 3× the base or more.
 
 ## Installation
 
@@ -72,7 +73,7 @@ python generate.py --model flux1 --checkpoint black-forest-labs/FLUX.1-dev \
   --prompt "..." --height 4096 --width 4096
 ```
 
-With `--model ideogram4`, the prompt is first expanded by Ideogram 4's prompt enhancer.
+With `--model ideogram4`, the prompt is first expanded by Ideogram 4's prompt enhancer. With `--model qwen-image`, a quality suffix is appended to every prompt: Qwen-Image's own ", Ultra HD, 4K, cinematic composition", followed by ", faithful to the described content, quantities, style and medium, coherent fine detail, consistent scale, proportion and perspective, believable light and shadow, smooth tonal gradations." It names no content, lighting or style, so it suits any prompt; `--no-prompt-suffix` turns it off.
 
 On GPUs with less than 60 GB of memory, idle models are offloaded to the CPU automatically. `--multi-gpu` spreads the model over all visible GPUs instead, for canvases that do not fit on one.
 
@@ -104,7 +105,7 @@ image.save("village.png")
 area.remove()                # back to the original attention
 ```
 
-For Ideogram 4, load the pipeline with `area.pipelines.SlimIdeogram4Pipeline` instead of diffusers' `Ideogram4Pipeline`; it uses the same weights and fits much larger canvases in memory.
+Qwen-Image runs true classifier-free guidance only when a `negative_prompt` is given (an empty string works); `true_cfg_scale` sets its strength. `generate.py` also appends a quality suffix (`QWEN_SUFFIX` in `generate.py`) to every prompt, so add it to your prompts when you call the pipeline yourself. For Ideogram 4, load the pipeline with `area.pipelines.SlimIdeogram4Pipeline` instead of diffusers' `Ideogram4Pipeline`; it uses the same weights and fits much larger canvases in memory.
 
 Canvases at or below the model's native resolution keep the original attention. Height and width must divide into whole patches, and the two patch counts must share a factor of at least 2, since Phase I pools *f × f* blocks.
 
@@ -113,14 +114,14 @@ Canvases at or below the model's native resolution keep the original attention. 
 | `AReA(...)` argument | `generate.py` flag | Default | Description |
 |---|---|---|---|
 | `pooling` | `--pooling` | `subsample` | Phase I: the token kept for each *f × f* block. `subsample` (block centre), `mean`, `medoid` or `random`. |
-| `switch_sigma` | `--switch-sigma` | per model | Noise level σ\* at which Phase II takes over: Phase II starts at the first step whose σ is at or below σ\*. FLUX.1 0.89 (step 8 of 28), Ideogram 4 0.92 (step 20 of 48 at 4096 × 4096). |
+| `switch_sigma` | `--switch-sigma` | per model | Noise level σ\* at which Phase II takes over: Phase II starts at the first step whose σ is at or below σ\*. FLUX.1 0.89 (step 8 of 28), Qwen-Image 0.87 (step 20 of 40 at 4096 × 4096), Ideogram 4 0.92 (step 20 of 48 at 4096 × 4096). |
 | `halo` | `--halo` | 8 | Largest Halo width δ<sub>max</sub>, in patches. |
 | `bridge_ratio` | `--bridge-ratio` | 0.5 | Global-KV bridge ratio ρ: each window of side *w* gets (ρ*w*)² bridge tokens. |
 | `seed` | `--seed` | 0 | Seed for window boundary jitter, Halo widths and `random` pooling. `generate.py` uses the generation seed. |
 
-The switch is a noise level rather than a step count because models differ in noise schedules and step counts (Appendix A.3 of the paper), so one σ\* lands on different steps for different models, step counts and, for Ideogram 4, resolutions. To try AReA on another model, search σ\* between 0.86 and 0.96, where the defaults of the models we tuned lie, instead of reusing another model's number of Phase I steps.
+The switch is a noise level rather than a step count because models differ in noise schedules and step counts (Appendix A.3 of the paper), so one σ\* lands on different steps for different models, step counts and, for Qwen-Image and Ideogram 4, resolutions. To try AReA on another model, search σ\* between 0.86 and 0.96, where the defaults of the models we tuned lie, instead of reusing another model's number of Phase I steps.
 
-Other `generate.py` flags: `--model`, `--checkpoint`, `--height`, `--width`, `--steps`, `--guidance`, `--offload`, `--multi-gpu`, `--output-dir`, and `--prompt-file` to generate a whole prompt list. Run `python generate.py --help` for details and defaults.
+Other `generate.py` flags: `--model`, `--checkpoint`, `--height`, `--width`, `--steps`, `--guidance`, `--offload`, `--multi-gpu`, `--no-prompt-suffix`, `--output-dir`, and `--prompt-file` to generate a whole prompt list. Run `python generate.py --help` for details and defaults.
 
 ## HRGen-1K
 

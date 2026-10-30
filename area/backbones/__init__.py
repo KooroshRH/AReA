@@ -1,7 +1,8 @@
 from .flux import FluxBackbone
 from .ideogram import IdeogramBackbone
+from .qwen import QwenBackbone
 
-BACKBONES = (FluxBackbone, IdeogramBackbone)
+BACKBONES = (FluxBackbone, QwenBackbone, IdeogramBackbone)
 
 
 def find_backbone(pipe):
