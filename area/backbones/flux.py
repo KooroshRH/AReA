@@ -9,7 +9,7 @@ from diffusers.models.attention_dispatch import dispatch_attention_fn
 from diffusers.models.embeddings import apply_rotary_emb
 from diffusers.models.transformers.transformer_flux import FluxAttnProcessor
 
-from .. import attention, tiling
+from .. import attention
 from .base import Backbone
 
 NATIVE_PATCHES = 64          # 1024 px / 16 px per patch
@@ -150,19 +150,8 @@ class FluxBackbone(Backbone):
 
     def _after_embedding(self, module, args, output):
         st = self.state
-        if st.phase != "fine":
-            return
-        cfg = self.config
-        w_min = min(self.native, max(st.h, st.w))
-        energy = tiling.detail_map(output, st.h, st.w)
-        windows = tiling.adaptive_tiling(
-            energy, st.h, st.w, st.size, w_min, st.txt_len, rng=tiling.step_rng(cfg.seed, st.step, 0x5EA1))
-        registers = max(1, int(round(st.size * cfg.bridge_ratio))) ** 2 if cfg.bridge_ratio > 0 else 0
-        widths = tiling.halo_widths(windows, st.h, st.w, cfg.halo, tiling.step_rng(cfg.seed, st.step, 0x4A11))
-        # never cost more than a full-attention step: cut bridge tokens, then the Halo
-        registers, widths = attention.fit_extra_keys(windows, st.h, st.w, st.txt_len, registers, widths)
-        st.data["layout"] = attention.build_fine_layout(
-            windows, st.h, st.w, widths, cfg.halo, registers, cfg.seed, st.step, output.dtype, output.device)
+        if st.phase == "fine":
+            st.data["layout"] = self.fine_layout(output, st.h, st.w, st.step, st.size, st.txt_len)
 
     # ---- rotary embeddings -------------------------------------------------
 

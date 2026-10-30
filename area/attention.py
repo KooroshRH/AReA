@@ -67,16 +67,22 @@ def _pool(x_img: torch.Tensor, h: int, w: int, f: int, pooling: str,
 
 
 def pool_keys_values(key: torch.Tensor, value: torch.Tensor, txt_len: int, h: int, w: int, f: int,
-                     pooling: str, seed: int = 0, step: int = 0, block: int = 0
+                     pooling: str, seed: int = 0, step: int = 0, block: int = 0, memo: Optional[dict] = None
                      ) -> Tuple[torch.Tensor, torch.Tensor]:
     """Keep one token per ``f x f`` block of the image keys and values (text is never pooled).
 
     ``subsample`` keeps the block centre, ``mean`` averages the block, ``medoid`` keeps the token
     whose key is closest to the block-mean key, and ``random`` keeps a token drawn per
     (seed, step, block). Keys must be unrotated; K and V always come from the same token.
+    ``memo`` (one dict per block and step) keeps the selection of the first call and replays it
+    on later ones, so both passes of true classifier-free guidance pool with the same tokens.
     """
     k_img, v_img = key[:, txt_len:], value[:, txt_len:]
-    sel = _block_selection(k_img, h, w, f, pooling, seed, step, block)
+    sel = memo.get("pool") if memo is not None else None
+    if sel is None:
+        sel = _block_selection(k_img, h, w, f, pooling, seed, step, block)
+        if memo is not None and sel is not None:
+            memo["pool"] = sel
     k = torch.cat([key[:, :txt_len], _pool(k_img, h, w, f, pooling, sel)], dim=1)
     v = torch.cat([value[:, :txt_len], _pool(v_img, h, w, f, pooling, sel)], dim=1)
     return k, v
@@ -166,20 +172,22 @@ def build_fine_layout(windows: List[tiling.Window], h: int, w: int, widths: List
 
 
 def windowed_attention(q_txt, k_txt, v_txt, q_img, k_img, v_img, k_img_unrotated,
-                       layout: FineLayout, backend=None) -> Tuple[torch.Tensor, torch.Tensor]:
+                       layout: FineLayout, backend=None, memo: Optional[dict] = None
+                       ) -> Tuple[torch.Tensor, torch.Tensor]:
     """Attention inside each window, its keys extended by the Halo ring and the bridge tokens.
 
     Queries and keys are already rotated with their true grid positions; ``k_img_unrotated``
     ranks the bridge tokens. Window outputs are merged with the centre weights; the text
-    output is the mean over windows.
+    output is the mean over windows. ``memo`` keeps the bridge tokens of the first call and
+    replays them on later ones, as in ``pool_keys_values``.
     """
     b, t, heads, dim = q_txt.shape
     n_img = q_img.shape[1]
     out_img = torch.zeros(b, n_img, heads, dim, dtype=q_img.dtype, device=q_img.device)
     out_txt = torch.zeros(b, t, heads, dim, dtype=q_img.dtype, device=q_img.device)
-    score = bridge.token_importance(k_img_unrotated) if layout.registers > 0 else None
+    score = None
 
-    for group in layout.groups:
+    for i, group in enumerate(layout.groups):
         g, n = group.tokens.shape
         flat = group.tokens.reshape(-1)
 
@@ -188,8 +196,14 @@ def windowed_attention(q_txt, k_txt, v_txt, q_img, k_img, v_img, k_img_unrotated
             return torch.cat([x_txt.unsqueeze(1).expand(b, g, t, heads, dim), local], dim=2)
 
         extra_k, extra_v = [], []
-        if score is not None:
-            reg = bridge.select_registers(score, group.tokens, layout.registers, layout.h, layout.w).reshape(-1)
+        if layout.registers > 0:
+            reg = memo.get(("bridge", i)) if memo is not None else None
+            if reg is None:
+                if score is None:
+                    score = bridge.token_importance(k_img_unrotated)
+                reg = bridge.select_registers(score, group.tokens, layout.registers, layout.h, layout.w).reshape(-1)
+                if memo is not None:
+                    memo[("bridge", i)] = reg
             extra_k.append(k_img[:, reg].reshape(b, g, -1, heads, dim))
             extra_v.append(v_img[:, reg].reshape(b, g, -1, heads, dim))
         if group.halo is not None:
